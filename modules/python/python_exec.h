@@ -27,5 +27,6 @@
 
 int python_exec1(struct sip_msg *, char *, char *);
 int python_exec2(struct sip_msg *, char *, char *);
+int python_exec_timer_route(struct sip_msg *, char *, char *);
 
 #endif

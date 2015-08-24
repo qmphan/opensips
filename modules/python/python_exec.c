@@ -45,14 +45,16 @@ python_exec1(struct sip_msg* _msg, char* method_name, char *foobar)
 int
 python_exec2(struct sip_msg *_msg, char *method_name, char *mystr)
 {
-    PyObject *pFunc, *pArgs, *pValue, *pResult;
+    PyObject *pFunc, *pArgs, *pValue, *pResult, *pMethodName;
     PyObject *msg;
+    PyObject *tmp;
+    const char *s;
     int rval;
 
     PyEval_AcquireLock();
     PyThreadState_Swap(myThreadState);
 
-    pFunc = PyObject_GetAttrString(handler_obj, method_name);
+    pFunc = PyObject_GetAttrString(handler_obj, "call_routing_function");
     if (pFunc == NULL || !PyCallable_Check(pFunc)) {
         LM_ERR("%s not found or is not callable\n", method_name);
         Py_XDECREF(pFunc);
@@ -70,6 +72,92 @@ python_exec2(struct sip_msg *_msg, char *method_name, char *mystr)
         return -1;
     }
 
+    pArgs = PyTuple_New(mystr == NULL ? 2 : 3);
+    if (pArgs == NULL) {
+        LM_ERR("PyTuple_New() has failed\n");
+        msg_invalidate(msg);
+        Py_DECREF(msg);
+        Py_DECREF(pFunc);
+        PyThreadState_Swap(NULL);
+        PyEval_ReleaseLock();
+        return -1;
+    }
+
+    pMethodName = Py_BuildValue("s", method_name);
+    PyTuple_SetItem(pArgs, 0, pMethodName);
+    PyTuple_SetItem(pArgs, 1, msg);
+    /* Tuple steals msg */
+
+    if (mystr != NULL) {
+        pValue = PyString_FromString(mystr);
+        if (pValue == NULL) {
+            LM_ERR("PyString_FromString(%s) has failed\n", mystr);
+            msg_invalidate(msg);
+            Py_DECREF(pArgs);
+            Py_DECREF(pFunc);
+            PyThreadState_Swap(NULL);
+            PyEval_ReleaseLock();
+            return -1;
+        }
+        PyTuple_SetItem(pArgs, 2, pValue);
+        /* Tuple steals pValue */
+    }
+
+    pResult = PyObject_CallObject(pFunc, pArgs);
+    msg_invalidate(msg);
+    Py_DECREF(pArgs);
+    Py_DECREF(pFunc);
+    if (PyErr_Occurred()) {
+        Py_XDECREF(pResult);
+        python_handle_exception("python_exec2");
+        PyThreadState_Swap(NULL);
+        PyEval_ReleaseLock();
+        return -1;
+    }
+
+    if (pResult == NULL || pResult == Py_None) {
+        LM_ERR("PyObject_CallObject() returned NULL\n");
+        PyThreadState_Swap(NULL);
+        PyEval_ReleaseLock();
+        return -1;
+    }
+
+    rval = PyInt_AsLong(pResult);
+    if (PyErr_Occurred()) {
+        tmp = PyObject_Repr(pResult);
+        s = PyString_AsString(tmp);
+        LM_ERR("Python routing function return something other than an integer or None: %s", s);
+        PyErr_Clear();
+        rval = -1;
+    }
+
+    Py_DECREF(pResult);
+    PyThreadState_Swap(NULL);
+    PyEval_ReleaseLock();
+    return rval;
+}
+
+int
+python_exec_timer_route(struct sip_msg *_msg, char *method_name, char *mystr)
+{
+    PyObject *pFunc, *pArgs, *pValue, *pResult, *pMethodName;
+    PyObject *msg;
+    PyObject *tmp;
+    const char *s;
+    int rval;
+
+    PyEval_AcquireLock();
+    PyThreadState_Swap(myThreadState);
+
+    pFunc = PyObject_GetAttrString(handler_obj, "call_timer_function");
+    if (pFunc == NULL || !PyCallable_Check(pFunc)) {
+        LM_ERR("%s not found or is not callable\n", method_name);
+        Py_XDECREF(pFunc);
+        PyThreadState_Swap(NULL);
+        PyEval_ReleaseLock();
+        return -1;
+    }
+
     pArgs = PyTuple_New(mystr == NULL ? 1 : 2);
     if (pArgs == NULL) {
         LM_ERR("PyTuple_New() has failed\n");
@@ -80,7 +168,9 @@ python_exec2(struct sip_msg *_msg, char *method_name, char *mystr)
         PyEval_ReleaseLock();
         return -1;
     }
-    PyTuple_SetItem(pArgs, 0, msg);
+
+    pMethodName = Py_BuildValue("s", method_name);
+    PyTuple_SetItem(pArgs, 0, pMethodName);
     /* Tuple steals msg */
 
     if (mystr != NULL) {
@@ -104,13 +194,13 @@ python_exec2(struct sip_msg *_msg, char *method_name, char *mystr)
     Py_DECREF(pFunc);
     if (PyErr_Occurred()) {
         Py_XDECREF(pResult);
-        python_handle_exception("python_exec2");
+        python_handle_exception("python_exec_timer_route");
         PyThreadState_Swap(NULL);
         PyEval_ReleaseLock();
         return -1;
     }
 
-    if (pResult == NULL) {
+    if (pResult == NULL || pResult == Py_None) {
         LM_ERR("PyObject_CallObject() returned NULL\n");
         PyThreadState_Swap(NULL);
         PyEval_ReleaseLock();
@@ -118,6 +208,14 @@ python_exec2(struct sip_msg *_msg, char *method_name, char *mystr)
     }
 
     rval = PyInt_AsLong(pResult);
+    if (PyErr_Occurred()) {
+        tmp = PyObject_Repr(pResult);
+        s = PyString_AsString(tmp);
+        LM_ERR("Python routing function return something other than an integer or None: %s", s);
+        PyErr_Clear();
+        rval = -1;
+    }
+
     Py_DECREF(pResult);
     PyThreadState_Swap(NULL);
     PyEval_ReleaseLock();

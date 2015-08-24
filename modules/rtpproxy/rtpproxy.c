@@ -363,7 +363,7 @@ static cmd_export_t cmds[] = {
 		0, 0,
 		REQUEST_ROUTE|ONREPLY_ROUTE|FAILURE_ROUTE|BRANCH_ROUTE|LOCAL_ROUTE},
 	{"engage_rtp_proxy",    (cmd_function)engage_rtp_proxy0_f,     0,
-		fixup_engage, 0,
+		0, 0,
 		REQUEST_ROUTE|FAILURE_ROUTE|BRANCH_ROUTE|LOCAL_ROUTE},
 	{"engage_rtp_proxy",    (cmd_function)engage_rtp_proxy1_f,     1,
 		fixup_engage, 0,
@@ -378,19 +378,19 @@ static cmd_export_t cmds[] = {
 		0, 0,
 		REQUEST_ROUTE|ONREPLY_ROUTE|FAILURE_ROUTE|BRANCH_ROUTE|LOCAL_ROUTE},
 	{"rtpproxy_offer",	(cmd_function)rtpproxy_offer2_f,     1,
-		0, 0,
+		fixup_engage, 0,
 		REQUEST_ROUTE|ONREPLY_ROUTE|FAILURE_ROUTE|BRANCH_ROUTE|LOCAL_ROUTE},
 	{"rtpproxy_offer",	(cmd_function)rtpproxy_offer2_f,     2,
-		0, 0,
+		fixup_engage, 0,
 		REQUEST_ROUTE|ONREPLY_ROUTE|FAILURE_ROUTE|BRANCH_ROUTE|LOCAL_ROUTE},
 	{"rtpproxy_answer",	(cmd_function)rtpproxy_answer2_f,    0,
 		0, 0,
 		REQUEST_ROUTE|ONREPLY_ROUTE|FAILURE_ROUTE|BRANCH_ROUTE|LOCAL_ROUTE},
 	{"rtpproxy_answer",	(cmd_function)rtpproxy_answer2_f,    1,
-		0, 0,
+		fixup_engage, 0,
 		REQUEST_ROUTE|ONREPLY_ROUTE|FAILURE_ROUTE|BRANCH_ROUTE|LOCAL_ROUTE},
 	{"rtpproxy_answer",	(cmd_function)rtpproxy_answer2_f,    2,
-		0, 0,
+		fixup_engage, 0,
 		REQUEST_ROUTE|ONREPLY_ROUTE|FAILURE_ROUTE|BRANCH_ROUTE|LOCAL_ROUTE},
 	{"rtpproxy_stream2uac",(cmd_function)rtpproxy_stream2uac2_f, 2,
 		fixup_var_str_int, 0,
@@ -745,14 +745,27 @@ static int fixup_set_id(void ** param, int param_no)
 }
 
 
-
-static int fixup_engage(void** param, int param_no)
+static int
+fixup_engage(void** param, int param_no)
 {
-	if (!dlg_api.create_dlg) {
+	pv_elem_t *model;
+	str s;
+
+        if (!dlg_api.create_dlg) {
 		LM_ERR("Dialog module not loaded. Can't use engage_rtp_proxy function\n");
 		return -1;
 	}
-
+	model=NULL;
+	s.s = (char*)(*param); s.len = strlen(s.s);
+	if(pv_parse_format(&s,&model)<0) {
+		LM_ERR("wrong format[%s]!\n", (char*)(*param));
+		return E_UNSPEC;
+	}
+	if (model==NULL) {
+		LM_ERR("empty parameter!\n");
+		return E_UNSPEC;
+	}
+	*param = (void*)model;
 	return 0;
 }
 
@@ -2341,6 +2354,9 @@ pkg_strdup(char *cp)
 static int
 rtpproxy_offer2_f(struct sip_msg *msg, char *param1, char *param2)
 {
+        str ip = { .s=0, .len=0};
+        str flag = { .s=0, .len=0};
+        
 	if(rtpp_notify_socket.s)
 	{
 		if ( (!msg->to && parse_headers(msg, HDR_TO_F,0)<0) || !msg->to ) {
@@ -2354,18 +2370,34 @@ rtpproxy_offer2_f(struct sip_msg *msg, char *param1, char *param2)
 			dlg_api.create_dlg(msg,0);
 	}
 
-	return force_rtp_proxy(msg, param1, param2, 1);
+        if (param1 && pv_printf_s( msg, (pv_elem_p)param1, &flag)!=0) {
+		return -1;
+        }
+        if (param2 && pv_printf_s( msg, (pv_elem_p)param2, &ip)!=0) {
+		return -1;
+        }
+	return force_rtp_proxy(msg, flag.s, ip.s, 1);
 }
 
 static int
 rtpproxy_answer2_f(struct sip_msg *msg, char *param1, char *param2)
 {
+        str ip = { .s=0, .len=0};
+        str flag = { .s=0, .len=0};
 
 	if (msg->first_line.type == SIP_REQUEST)
 		if (msg->first_line.u.request.method_value != METHOD_ACK)
 			return -1;
 
-	return force_rtp_proxy(msg, param1, param2, 0);
+        if (param1 && pv_printf_s( msg, (pv_elem_p)param1, &flag)!=0) {
+		return -1;
+        }
+        if (param2 && pv_printf_s( msg, (pv_elem_p)param2, &ip)!=0) {
+		return -1;
+        }
+        LM_ERR("Adress found is %.*s", ip.len, ip.s); 
+
+	return force_rtp_proxy(msg, flag.s, ip.s, 0);
 }
 
 static void engage_callback(struct dlg_cell *dlg, int type,

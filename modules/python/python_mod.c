@@ -22,6 +22,9 @@
 
 #include "../../str.h"
 #include "../../sr_module.h"
+#include "../../mem/shm_mem.h"
+#include "../tm/tm_load.h"
+#include "../dialog/dlg_load.h"
 
 #include "python_exec.h"
 #include "python_iface.h"
@@ -35,7 +38,8 @@ static int mod_init(void);
 static int child_init(int rank);
 static void mod_destroy(void);
 
-static str script_name = {.s = "/usr/local/etc/opensips/handler.py", .len = 0};
+static str python_router = {.s = "pyopensips.confighelper.router", .len = 0};
+static str script_name = {.s = "handler.py", .len = 0};
 static str mod_init_fname = { .s = "mod_init", .len = 0};
 static str child_init_mname = { .s = "child_init", .len = 0};
 PyObject *handler_obj;
@@ -43,8 +47,13 @@ PyObject *format_exc_obj;
 
 PyThreadState *myThreadState;
 
+/* External module bindings */
+struct dlg_binds *lb_dlg_binds;
+struct tm_binds python_tmb;
+
 /** module parameters */
 static param_export_t params[]={
+    {"python_router",      STR_PARAM, &python_router},
     {"script_name",        STR_PARAM, &script_name },
     {"mod_init_function",  STR_PARAM, &mod_init_fname },
     {"child_init_method",  STR_PARAM, &child_init_mname },
@@ -61,6 +70,8 @@ static cmd_export_t cmds[] = {
     { "python_exec", (cmd_function)python_exec2, 2,  NULL, 0,
       REQUEST_ROUTE | FAILURE_ROUTE
       | ONREPLY_ROUTE | BRANCH_ROUTE },
+    { "python_exec_on_timer", (cmd_function)python_exec_timer_route, 1,  NULL, 0,
+      TIMER_ROUTE },
     { 0, 0, 0, 0, 0, 0 }
 };
 
@@ -85,9 +96,27 @@ static int
 mod_init(void)
 {
     char *dname, *bname;
+    static char temp_s[1000];
     int i;
     PyObject *sys_path, *pDir, *pModule, *pFunc, *pArgs;
     PyThreadState *mainThreadState;
+
+    /* Load dialog API */
+    lb_dlg_binds = (struct dlg_binds*)shm_malloc( sizeof(struct dlg_binds) );
+    if (lb_dlg_binds == 0) {
+        LM_CRIT("failed to get shm mem for dialog binding data struct\n");
+        return -1;
+    }
+    if (load_dlg_api(lb_dlg_binds) != 0) {
+        shm_free(lb_dlg_binds);
+        lb_dlg_binds = NULL;
+    }
+
+    /* load TM API */
+    if (load_tm_api(&python_tmb)!=0) {
+	LM_ERR("can't load TM API\n");
+	return -1;
+    }
 
     if (script_name.len == 0) {
         script_name.len = strlen(script_name.s);
@@ -98,22 +127,28 @@ mod_init(void)
     if (child_init_mname.len == 0) {
         child_init_mname.len = strlen(child_init_mname.s);
     }
+    
+    strncpy(temp_s, script_name.s, sizeof(temp_s));
+    dname = dirname(temp_s);
+    printf("after dirname");
+    if (strlen(dname) == 0)
+        dname = ".";
 
-    bname = basename(script_name.s);
+    strncpy(temp_s, script_name.s, sizeof(temp_s));
+    bname = basename(temp_s);
     i = strlen(bname);
     if (bname[i - 1] == 'c' || bname[i - 1] == 'o')
         i -= 1;
     if (bname[i - 3] == '.' && bname[i - 2] == 'p' && bname[i - 1] == 'y') {
         bname[i - 3] = '\0';
-    } else {
+    } 
+/*
+    else {
         LM_ERR("%s: script_name doesn't look like a python script\n",
           script_name.s);
         return -1;
     }
-    dname = dirname(script_name.s);
-    if (strlen(dname) == 0)
-        dname = ".";
-
+*/
     Py_Initialize();
     PyEval_InitThreads();
     mainThreadState = PyThreadState_Get();
@@ -143,9 +178,12 @@ mod_init(void)
     PyList_Insert(sys_path, 0, pDir);
     Py_DECREF(pDir);
 
-    pModule = PyImport_ImportModule(bname);
+//    pModule = PyImport_ImportModule(bname);
+    pModule = PyImport_ImportModule(python_router.s);
+
     if (pModule == NULL) {
-        LM_ERR("cannot import %s\n", bname);
+        LM_ERR("cannot import %s\n", python_router.s);
+	PyErr_Print();
         PyEval_ReleaseLock();
         return -1;
     }
@@ -180,7 +218,8 @@ mod_init(void)
         return -1;
     }
 
-    pArgs = PyTuple_New(0);
+    //pArgs = PyTuple_New(0);
+    pArgs = Py_BuildValue("(s)", script_name.s);
     if (pArgs == NULL) {
         LM_ERR("PyTuple_New() has failed\n");
         Py_DECREF(pFunc);
